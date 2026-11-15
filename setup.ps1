@@ -1,7 +1,7 @@
 # family-pc-helper setup — run by GrandmaHelper.exe (already elevated).
 # Joins this PC to Michael's Tailscale network, turns on SSH (Tailscale-only, key-only),
-# installs RustDesk for screen access over Tailscale, keeps the PC awake on power,
-# and does a first adware pass. Progress goes to a private ntfy topic; secrets stay on this PC.
+# installs RustDesk for screen access over Tailscale, keeps the PC awake on power.
+# Access only, no cleanup. Progress goes to a private ntfy topic; secrets stay on this PC.
 # $dry = $true -> rehearsal: no installs or system changes.
 
 $ntfy    = 'https://ntfy.sh/gma-c3709ac8de214eb9'
@@ -126,22 +126,8 @@ Step 'Tailscale' {
     "joined as grandma-pc, ip=$ip"
 }
 
-# ---- 6. Adware: AdwCleaner clean + Defender quick scan -------------------------
-Step 'AdwCleaner' {
-    $u = 'https://downloads.malwarebytes.com/file/adwcleaner'
-    if ($dry) { $h = Invoke-WebRequest $u -Method Head -UseBasicParsing; return "dry: reachable ($($h.StatusCode))" }
-    Invoke-WebRequest $u -OutFile "$dl\adwcleaner.exe" -UseBasicParsing
-    Start-Process "$dl\adwcleaner.exe" -ArgumentList '/eula /clean /noreboot' -Wait
-    $log = Get-ChildItem 'C:\AdwCleaner\Logs' -Filter '*.txt' -ErrorAction SilentlyContinue |
-           Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($log) { $n = (Select-String -Path $log.FullName -Pattern 'Deleted' | Measure-Object).Count; "done, $n items removed" } else { 'done, no log' }
-}
-Step 'Defender scan' {
-    if ($dry) { return 'dry: realtime=' + (Get-MpComputerStatus).RealTimeProtectionEnabled }
-    Update-MpSignature -ErrorAction SilentlyContinue
-    Start-MpScan -ScanType QuickScan -AsJob | Out-Null
-    'quick scan started'
-}
+# Access only. Nothing is cleaned here: once Michael is in over SSH, he looks first
+# (read-only check) and removes only what the check finds.
 
 Report 'ALL DONE'
 Write-Host "`n  ALL DONE. Michael can reach your computer now. You can close this window." -ForegroundColor Green
