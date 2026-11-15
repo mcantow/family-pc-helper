@@ -108,9 +108,14 @@ Step 'RustDesk' {
     Start-Sleep 5
     $chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'.ToCharArray()
     $pw = -join (1..16 | ForEach-Object { $chars | Get-Random })
-    $null = & $rd --password $pw 2>&1
+    # rustdesk.exe is a GUI program: run it to completion and capture output via files
+    Start-Process $rd -ArgumentList '--password', $pw -Wait -WindowStyle Hidden
     $id = ''
-    for ($i = 0; $i -lt 10 -and -not $id; $i++) { $id = ((& $rd --get-id 2>$null) | Out-String).Trim(); if (-not $id) { Start-Sleep 3 } }
+    for ($i = 0; $i -lt 20 -and -not $id; $i++) {
+        Start-Process $rd -ArgumentList '--get-id' -Wait -WindowStyle Hidden -RedirectStandardOutput "$dl\rdid.txt"
+        $id = ((Get-Content "$dl\rdid.txt" -ErrorAction SilentlyContinue) | Out-String).Trim()
+        if (-not $id) { Start-Sleep 3 }
+    }
     "id=$id`npassword=$pw" | Set-Content "$secrets\rustdesk.txt" -Encoding ascii
     "installed, id=$id (password saved on the PC)"
 }
