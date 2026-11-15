@@ -142,9 +142,17 @@ Step 'SSH' {
     }
     Set-Service sshd -StartupType Automatic
     Start-Service sshd
+    # Admin users authorize via this file; sshd REQUIRES it be owned by Administrators/SYSTEM
+    # and readable by no one else, or it silently refuses the key ("accepts key" then denies).
     $ak = 'C:\ProgramData\ssh\administrators_authorized_keys'
-    $sshKey | Set-Content $ak -Encoding ascii
-    icacls $ak /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F' | Out-Null
+    # write as plain ASCII, no BOM, single line + newline
+    [IO.File]::WriteAllText($ak, $sshKey + "`n", (New-Object Text.ASCIIEncoding))
+    icacls $ak /reset | Out-Null
+    icacls $ak /inheritance:r /grant 'Administrators:F' 'SYSTEM:F' | Out-Null
+    icacls $ak /setowner 'Administrators' | Out-Null
+    $acl = Get-Acl $ak
+    $acl.SetOwner([Security.Principal.NTAccount]'BUILTIN\Administrators')
+    Set-Acl $ak $acl
     $cfg = 'C:\ProgramData\ssh\sshd_config'
     $lines = Get-Content $cfg | Where-Object { $_ -notmatch '^\s*#?\s*(PasswordAuthentication|PubkeyAuthentication)\b' }
     ($lines + 'PasswordAuthentication no' + 'PubkeyAuthentication yes') | Set-Content $cfg -Encoding ascii
@@ -153,6 +161,8 @@ Step 'SSH' {
     New-NetFirewallRule -DisplayName 'SSH - Tailscale only' -Direction Inbound -Protocol TCP -LocalPort 22 `
         -RemoteAddress 100.64.0.0/10 -Action Allow | Out-Null
     Restart-Service sshd
+    # Keyless fallback: Tailscale SSH, authenticated by tailnet identity (no key files).
+    if (Test-Path $ts) { & $ts set --ssh 2>$null | Out-Null }
     "on, login user=$env:USERNAME"
 }
 $null = CheckJoin
