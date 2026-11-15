@@ -43,7 +43,17 @@ $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIden
 $os = (Get-CimInstance Win32_OperatingSystem).Caption
 $av = (Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction SilentlyContinue | ForEach-Object displayName) -join ', '
 Report ("started admin={0} dry={1} test={2} os={3} user={4} av={5}" -f $isAdmin, $dry, $test, $os, $env:USERNAME, $av)
-if (-not $isAdmin -and -not $dry) { Report 'FAIL: not running as administrator'; Read-Host 'Press Enter to close'; return }
+# If launched from a normal PowerShell (irm ... | iex), re-launch elevated. Grandma clicks Yes.
+if (-not $isAdmin -and -not $dry -and -not $test) {
+    $selfUrl = 'https://raw.githubusercontent.com/mcantow/family-pc-helper/main/setup.ps1'
+    Report 'asking for admin (grandma: click YES on the blue box)'
+    $inner = "irm '$selfUrl' -UseBasicParsing | iex"
+    try {
+        Start-Process powershell -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-Command',$inner)
+        Write-Host "`n  A blue box will ask permission - click YES. This window can close.`n" -ForegroundColor Yellow
+    } catch { Report 'FAIL: admin prompt was declined' }
+    return
+}
 
 $dl = Join-Path $env:TEMP ('fh-' + [guid]::NewGuid().ToString('N').Substring(0,8))
 New-Item -ItemType Directory -Force $dl | Out-Null
