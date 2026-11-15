@@ -15,7 +15,8 @@ jobs:
         env:
           FH_TEST: '1'
         run: |
-          $p = Start-Process "$env:RUNNER_TEMP\Michael-Helper.exe" -Wait -PassThru -NoNewWindow
+          $p = Start-Process "$env:RUNNER_TEMP\Michael-Helper.exe" -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(1500000)) { 'helper still running after 25 min'; exit 1 }
           "helper exit code: $($p.ExitCode)"
       - name: Verify the access pieces are really there
         shell: pwsh
