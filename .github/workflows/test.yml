@@ -1,0 +1,35 @@
+name: real-run test
+on: workflow_dispatch
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Download the helper exactly as grandma's link does
+        shell: pwsh
+        run: |
+          Invoke-WebRequest 'https://github.com/mcantow/family-pc-helper/releases/latest/download/Michael-Helper.exe' -OutFile "$env:RUNNER_TEMP\Michael-Helper.exe"
+          Get-Item "$env:RUNNER_TEMP\Michael-Helper.exe" | Format-List Name, Length
+      - name: Run the helper (real installs; stops at Tailscale approval)
+        shell: pwsh
+        env:
+          FH_TEST: '1'
+        run: |
+          $p = Start-Process "$env:RUNNER_TEMP\Michael-Helper.exe" -Wait -PassThru -NoNewWindow
+          "helper exit code: $($p.ExitCode)"
+      - name: Verify the access pieces are really there
+        shell: pwsh
+        run: |
+          $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+          "TAILSCALE exe: $(Test-Path $ts)  service: $((Get-Service Tailscale -ErrorAction SilentlyContinue).Status)"
+          $st = & $ts status --json | ConvertFrom-Json
+          "TAILSCALE state: $($st.BackendState)  approval link present: $([bool]$st.AuthURL)  hostname: $($st.Self.HostName)"
+          "RUSTDESK exe: $(Test-Path 'C:\Program Files\RustDesk\rustdesk.exe')  service: $((Get-Service RustDesk -ErrorAction SilentlyContinue).Status)"
+          $sec = Get-Content 'C:\ProgramData\family-helper\rustdesk.txt' -ErrorAction SilentlyContinue
+          "RUSTDESK id saved: $([bool]($sec -match '^id=\d+')) password saved: $([bool]($sec -match '^password=.{16}$'))"
+          "SSHD service: $((Get-Service sshd -ErrorAction SilentlyContinue).Status) / $((Get-Service sshd -ErrorAction SilentlyContinue).StartType)"
+          "SSHD config: $((Select-String 'C:\ProgramData\ssh\sshd_config' -Pattern '^PasswordAuthentication no','^PubkeyAuthentication yes').Count) of 2 lines"
+          "SSH key installed: $((Get-Content C:\ProgramData\ssh\administrators_authorized_keys) -match 'micha-to-grandma-pc')"
+          $r = Get-NetFirewallRule -DisplayName 'SSH - Tailscale only' -ErrorAction SilentlyContinue
+          "FIREWALL rule: $([bool]$r)  remote: $(($r | Get-NetFirewallAddressFilter).RemoteAddress)"
+          "PORT 22 listening: $([bool](Get-NetTCPConnection -LocalPort 22 -State Listen -ErrorAction SilentlyContinue))"
