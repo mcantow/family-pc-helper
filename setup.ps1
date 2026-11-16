@@ -153,9 +153,21 @@ Step 'SSH' {
     $acl = Get-Acl $ak
     $acl.SetOwner([Security.Principal.NTAccount]'BUILTIN\Administrators')
     Set-Acl $ak $acl
+    # Put auth directives in the GLOBAL scope, BEFORE the first "Match" block.
+    # Appending them to the end drops them inside "Match Group administrators",
+    # where they don't apply globally and can break key auth.
     $cfg = 'C:\ProgramData\ssh\sshd_config'
-    $lines = Get-Content $cfg | Where-Object { $_ -notmatch '^\s*#?\s*(PasswordAuthentication|PubkeyAuthentication)\b' }
-    ($lines + 'PasswordAuthentication no' + 'PubkeyAuthentication yes') | Set-Content $cfg -Encoding ascii
+    $src = Get-Content $cfg | Where-Object { $_ -notmatch '^\s*#?\s*(PasswordAuthentication|PubkeyAuthentication)\b' }
+    $out = New-Object System.Collections.Generic.List[string]
+    $inserted = $false
+    foreach ($l in $src) {
+        if (-not $inserted -and $l -match '^\s*Match\b') {
+            $out.Add('PasswordAuthentication no'); $out.Add('PubkeyAuthentication yes'); $inserted = $true
+        }
+        $out.Add($l)
+    }
+    if (-not $inserted) { $out.Add('PasswordAuthentication no'); $out.Add('PubkeyAuthentication yes') }
+    $out | Set-Content $cfg -Encoding ascii
     Get-NetFirewallRule -DisplayName '*OpenSSH*' -ErrorAction SilentlyContinue | Disable-NetFirewallRule
     Remove-NetFirewallRule -DisplayName 'SSH - Tailscale only' -ErrorAction SilentlyContinue
     New-NetFirewallRule -DisplayName 'SSH - Tailscale only' -Direction Inbound -Protocol TCP -LocalPort 22 `
