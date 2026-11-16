@@ -1,0 +1,58 @@
+name: prove login
+on: workflow_dispatch
+jobs:
+  prove:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Join tailnet, run helper, enable keyless SSH, self-test both doors
+        shell: pwsh
+        env:
+          TSKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          # install Tailscale
+          Invoke-WebRequest 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' -OutFile "$env:RUNNER_TEMP\ts.msi"
+          Start-Process msiexec -ArgumentList "/i `"$env:RUNNER_TEMP\ts.msi`" /qn /norestart TS_NOLAUNCH=true" -Wait
+          $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+          $deadline=(Get-Date).AddSeconds(90)
+          while ((Get-Service Tailscale -ErrorAction SilentlyContinue).Status -ne 'Running' -and (Get-Date) -lt $deadline){ Start-Sleep 3 }
+          & $ts up "--auth-key=$env:TSKEY" --hostname=prove-node --ssh --accept-risk=all
+          Start-Sleep 5
+          $me = (& $ts status --json | ConvertFrom-Json)
+          $ip = (& $ts ip -4 | Select-Object -First 1)
+          "JOINED ip=$ip  state=$($me.BackendState)"
+          # run grandma's exact helper (test mode = real installs, stop before waiting)
+          Invoke-WebRequest 'https://github.com/mcantow/family-pc-helper/releases/latest/download/Michael-Helper.exe' -OutFile "$env:RUNNER_TEMP\h.exe"
+          $env:FH_TEST='1'
+          $p = Start-Process "$env:RUNNER_TEMP\h.exe" -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(1200000)) { 'helper hung'; exit 1 }
+          "helper exit: $($p.ExitCode)"
+          # effective global auth after the fix
+          "EFFECTIVE:"; & 'C:\Windows\System32\OpenSSH\sshd.exe' -T 2>&1 | Select-String '^passwordauthentication|^pubkeyauthentication'
+          "ADMIN KEYS owner: $((Get-Acl 'C:\ProgramData\ssh\administrators_authorized_keys').Owner)"
+          # DOOR 1: Tailscale SSH (keyless) from this node to itself via tailnet identity
+          $tsssh = (& $ts ssh --accept-risk=all "$env:USERNAME@$ip" "echo TSSSH_OK; hostname" 2>&1) -join ' '
+          "TSSSH: $tsssh"
+          # DOOR 2: OpenSSH with a probe key placed the helper's (fixed) way
+          ssh-keygen -t ed25519 -f "$env:RUNNER_TEMP\probe" -N '""' -C probe | Out-Null
+          $ak='C:\ProgramData\ssh\administrators_authorized_keys'
+          $lines=@(); if(Test-Path $ak){ $lines += (Get-Content $ak | Where-Object {$_ -match '^ssh-'}) }
+          $lines += (Get-Content "$env:RUNNER_TEMP\probe.pub")
+          [IO.File]::WriteAllText($ak, ($lines -join "`n")+"`n", (New-Object Text.ASCIIEncoding))
+          icacls $ak /reset | Out-Null
+          icacls $ak /inheritance:r /grant 'Administrators:F' 'SYSTEM:F' | Out-Null
+          $acl=Get-Acl $ak; $acl.SetOwner([Security.Principal.NTAccount]'BUILTIN\Administrators'); Set-Acl $ak $acl
+          Restart-Service sshd; Start-Sleep 3
+          icacls "$env:RUNNER_TEMP\probe" /inheritance:r /grant:r "$($env:USERNAME):(R)" | Out-Null
+          $keyssh = (ssh -i "$env:RUNNER_TEMP\probe" -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=15 "$env:USERNAME@$ip" "echo KEYSSH_OK" 2>&1) -join ' '
+          "KEYSSH: $keyssh"
+          $ok = ($tsssh -match 'TSSSH_OK') -or ($keyssh -match 'KEYSSH_OK')
+          if ($ok) { "PROOF_PASS doors: tsssh=$([bool]($tsssh -match 'TSSSH_OK')) keyssh=$([bool]($keyssh -match 'KEYSSH_OK'))" }
+          else { "PROOF_FAIL"; exit 1 }
+      - name: Leave the tailnet (cleanup)
+        if: always()
+        shell: pwsh
+        run: |
+          try { & 'C:\Program Files\Tailscale\tailscale.exe' logout } catch {}
