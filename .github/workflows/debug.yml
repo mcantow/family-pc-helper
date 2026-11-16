@@ -14,41 +14,36 @@ jobs:
           $p = Start-Process "$env:RUNNER_TEMP\h.exe" -PassThru -NoNewWindow
           if (-not $p.WaitForExit(1500000)) { 'still running'; exit 1 }
           "helper exit: $($p.ExitCode)"
-      - name: Effective sshd config + key file state
+      - name: Show the sshd_config the helper produced
         shell: pwsh
         run: |
-          $sshd = 'C:\Windows\System32\OpenSSH\sshd.exe'
-          "=== sshd -T (effective config) ==="
-          & $sshd -T 2>&1 | Select-String 'authorizedkeysfile|pubkeyauth|passwordauth|authenticationmethods|match'
-          $ak = 'C:\ProgramData\ssh\administrators_authorized_keys'
-          "=== admin keys file ==="
-          "owner: $((Get-Acl $ak).Owner)"
-          icacls $ak
-          "bytes: $((Get-Item $ak).Length)  content:"
-          Get-Content $ak
-          "=== sshd_config tail ==="
-          Get-Content 'C:\ProgramData\ssh\sshd_config' | Select-Object -Last 12
-      - name: Reproduce the reject with the server's own reason
+          "=== FULL sshd_config as the helper left it ==="
+          Get-Content 'C:\ProgramData\ssh\sshd_config' | ForEach-Object { $_ }
+      - name: Add my key, turn on debug logging, hit the REAL service, read its reason
         shell: pwsh
         run: |
           $ak = 'C:\ProgramData\ssh\administrators_authorized_keys'
           ssh-keygen -t ed25519 -f "$env:RUNNER_TEMP\probe" -N '""' -C probe | Out-Null
           $pub = Get-Content "$env:RUNNER_TEMP\probe.pub"
-          $lines = @(); if (Test-Path $ak) { $lines += Get-Content $ak }
-          $lines += $pub
+          $lines=@(); if (Test-Path $ak){ $lines+=Get-Content $ak }; $lines+=$pub
           [IO.File]::WriteAllText($ak, ($lines -join "`n") + "`n", (New-Object Text.ASCIIEncoding))
           icacls $ak /reset | Out-Null
           icacls $ak /inheritance:r /grant 'Administrators:F' 'SYSTEM:F' | Out-Null
-          $acl = Get-Acl $ak; $acl.SetOwner([Security.Principal.NTAccount]'BUILTIN\Administrators'); Set-Acl $ak $acl
-          # run a debug sshd on an alt port so we capture the server's reasoning
-          $sshd = 'C:\Windows\System32\OpenSSH\sshd.exe'
-          $log = "$env:RUNNER_TEMP\sshd-d.log"
-          $si = Start-Process $sshd -ArgumentList '-d','-p','2222','-E',$log -PassThru
-          Start-Sleep 4
+          $acl=Get-Acl $ak; $acl.SetOwner([Security.Principal.NTAccount]'BUILTIN\Administrators'); Set-Acl $ak $acl
+          # turn on verbose logging at the TOP of the config (before any Match block)
+          $cfg='C:\ProgramData\ssh\sshd_config'
+          $c = Get-Content $cfg
+          Set-Content $cfg (@('LogLevel DEBUG3') + $c) -Encoding ascii
+          Restart-Service sshd
+          Start-Sleep 3
           icacls "$env:RUNNER_TEMP\probe" /inheritance:r /grant:r "$($env:USERNAME):(R)" | Out-Null
-          "=== client attempt (verbose) ==="
-          ssh -i "$env:RUNNER_TEMP\probe" -p 2222 -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=15 -vv "$($env:USERNAME)@127.0.0.1" "echo KEY_LOGIN_OK" 2>&1 | Select-String 'Offering|Server accepts|Authentications that can continue|Permission denied|KEY_LOGIN_OK'
-          Start-Sleep 2
-          try { Stop-Process -Id $si.Id -Force } catch {}
-          "=== server debug log (the real reason) ==="
-          Get-Content $log | Select-String 'Accepted|Authentication refused|Failed|bad ownership|not in|authorized_keys|publickey|invalid|cannot|trusted' | Select-Object -First 25
+          "=== client attempt to the real service on :22 ==="
+          ssh -i "$env:RUNNER_TEMP\probe" -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=15 "$($env:USERNAME)@127.0.0.1" "echo KEY_LOGIN_OK" 2>&1 | ForEach-Object { $_ }
+          Start-Sleep 3
+          "=== sshd log file (if any) ==="
+          $lf='C:\ProgramData\ssh\logs\sshd.log'
+          if (Test-Path $lf) { Get-Content $lf -Tail 60 | Select-String 'refused|ownership|modes|Accepted|Failed|authorized|denied|bad|secur|trusted|publickey|invalid' }
+          "=== OpenSSH Operational event log (the real reason) ==="
+          Get-WinEvent -LogName 'OpenSSH/Operational' -MaxEvents 40 -ErrorAction SilentlyContinue |
+            Sort-Object TimeCreated | ForEach-Object { "{0}  {1}" -f $_.TimeCreated.ToString('HH:mm:ss'), ($_.Message -replace "`r`n",' ') } |
+            Select-String 'refused|ownership|modes|Accepted|Failed|authoriz|denied|bad|trusted|publickey|invalid|postponed'
