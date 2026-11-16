@@ -173,8 +173,7 @@ Step 'SSH' {
     New-NetFirewallRule -DisplayName 'SSH - Tailscale only' -Direction Inbound -Protocol TCP -LocalPort 22 `
         -RemoteAddress 100.64.0.0/10 -Action Allow | Out-Null
     Restart-Service sshd
-    # Keyless fallback: Tailscale SSH, authenticated by tailnet identity (no key files).
-    if (Test-Path $ts) { & $ts set --ssh 2>$null | Out-Null }
+    # (Tailscale SSH is not supported on Windows, so OpenSSH key auth is the only door.)
     "on, login user=$env:USERNAME"
 }
 $null = CheckJoin
