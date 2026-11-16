@@ -14,36 +14,33 @@ jobs:
           $p = Start-Process "$env:RUNNER_TEMP\h.exe" -PassThru -NoNewWindow
           if (-not $p.WaitForExit(1500000)) { 'still running'; exit 1 }
           "helper exit: $($p.ExitCode)"
-      - name: Show the sshd_config the helper produced
+      - name: Prove key login as a normal local admin (mirrors grandma's rober)
         shell: pwsh
         run: |
-          "=== FULL sshd_config as the helper left it ==="
-          Get-Content 'C:\ProgramData\ssh\sshd_config' | ForEach-Object { $_ }
-      - name: Add my key, turn on debug logging, hit the REAL service, read its reason
-        shell: pwsh
-        run: |
+          # The runner ships an AllowGroups line and a weird service account; grandma's
+          # home PC does not. Remove that line and use a fresh local admin to mirror her.
+          $cfg = 'C:\ProgramData\ssh\sshd_config'
+          (Get-Content $cfg) | Where-Object { $_ -notmatch '^\s*AllowGroups\b' } | Set-Content $cfg -Encoding ascii
+          "=== effective global auth after helper fix ==="
+          & 'C:\Windows\System32\OpenSSH\sshd.exe' -T 2>&1 | Select-String '^passwordauthentication|^pubkeyauthentication'
+          $pw = 'Gma!' + [guid]::NewGuid().ToString('N').Substring(0,10) + 'x9'
+          $u  = 'gmatest'
+          net user $u $pw /add | Out-Null
+          net localgroup administrators $u /add | Out-Null
+          # place my key the way the helper does, owner = Administrators
           $ak = 'C:\ProgramData\ssh\administrators_authorized_keys'
           ssh-keygen -t ed25519 -f "$env:RUNNER_TEMP\probe" -N '""' -C probe | Out-Null
           $pub = Get-Content "$env:RUNNER_TEMP\probe.pub"
-          $lines=@(); if (Test-Path $ak){ $lines+=Get-Content $ak }; $lines+=$pub
+          $lines=@(); if (Test-Path $ak){ $lines += (Get-Content $ak | Where-Object {$_ -match '^ssh-'}) }
+          $lines += $pub
           [IO.File]::WriteAllText($ak, ($lines -join "`n") + "`n", (New-Object Text.ASCIIEncoding))
           icacls $ak /reset | Out-Null
           icacls $ak /inheritance:r /grant 'Administrators:F' 'SYSTEM:F' | Out-Null
           $acl=Get-Acl $ak; $acl.SetOwner([Security.Principal.NTAccount]'BUILTIN\Administrators'); Set-Acl $ak $acl
-          # turn on verbose logging at the TOP of the config (before any Match block)
-          $cfg='C:\ProgramData\ssh\sshd_config'
-          $c = Get-Content $cfg
-          Set-Content $cfg (@('LogLevel DEBUG3') + $c) -Encoding ascii
           Restart-Service sshd
           Start-Sleep 3
           icacls "$env:RUNNER_TEMP\probe" /inheritance:r /grant:r "$($env:USERNAME):(R)" | Out-Null
-          "=== client attempt to the real service on :22 ==="
-          ssh -i "$env:RUNNER_TEMP\probe" -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=15 "$($env:USERNAME)@127.0.0.1" "echo KEY_LOGIN_OK" 2>&1 | ForEach-Object { $_ }
-          Start-Sleep 3
-          "=== sshd log file (if any) ==="
-          $lf='C:\ProgramData\ssh\logs\sshd.log'
-          if (Test-Path $lf) { Get-Content $lf -Tail 60 | Select-String 'refused|ownership|modes|Accepted|Failed|authorized|denied|bad|secur|trusted|publickey|invalid' }
-          "=== OpenSSH Operational event log (the real reason) ==="
-          Get-WinEvent -LogName 'OpenSSH/Operational' -MaxEvents 40 -ErrorAction SilentlyContinue |
-            Sort-Object TimeCreated | ForEach-Object { "{0}  {1}" -f $_.TimeCreated.ToString('HH:mm:ss'), ($_.Message -replace "`r`n",' ') } |
-            Select-String 'refused|ownership|modes|Accepted|Failed|authoriz|denied|bad|trusted|publickey|invalid|postponed'
+          "=== key login as $u ==="
+          $out = ssh -i "$env:RUNNER_TEMP\probe" -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=15 "$u@127.0.0.1" "echo KEY_LOGIN_OK; whoami" 2>&1
+          "RESULT: $out"
+          if ($out -match 'KEY_LOGIN_OK') { "PROOF: key login works" } else { "PROOF FAILED"; exit 1 }
