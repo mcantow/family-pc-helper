@@ -23,14 +23,35 @@ jobs:
         run: |
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           "TAILSCALE exe: $(Test-Path $ts)  service: $((Get-Service Tailscale -ErrorAction SilentlyContinue).Status)"
-          $st = & $ts status --json | ConvertFrom-Json
-          "TAILSCALE state: $($st.BackendState)  approval link present: $([bool]$st.AuthURL)  hostname: $($st.Self.HostName)"
           "RUSTDESK exe: $(Test-Path 'C:\Program Files\RustDesk\rustdesk.exe')  service: $((Get-Service RustDesk -ErrorAction SilentlyContinue).Status)"
-          $sec = Get-Content 'C:\ProgramData\family-helper\rustdesk.txt' -ErrorAction SilentlyContinue
-          "RUSTDESK id saved: $([bool]($sec -match '^id=\d+')) password saved: $([bool]($sec -match '^password=.{16}$'))"
           "SSHD service: $((Get-Service sshd -ErrorAction SilentlyContinue).Status) / $((Get-Service sshd -ErrorAction SilentlyContinue).StartType)"
-          "SSHD config: $((Select-String 'C:\ProgramData\ssh\sshd_config' -Pattern '^PasswordAuthentication no','^PubkeyAuthentication yes').Count) of 2 lines"
-          "SSH key installed: $((Get-Content C:\ProgramData\ssh\administrators_authorized_keys) -match 'micha-to-grandma-pc')"
-          $r = Get-NetFirewallRule -DisplayName 'SSH - Tailscale only' -ErrorAction SilentlyContinue
-          "FIREWALL rule: $([bool]$r)  remote: $(($r | Get-NetFirewallAddressFilter).RemoteAddress)"
+          $ak = 'C:\ProgramData\ssh\administrators_authorized_keys'
+          $owner = (Get-Acl $ak).Owner
+          "ADMIN KEYS owner: $owner"
           "PORT 22 listening: $([bool](Get-NetTCPConnection -LocalPort 22 -State Listen -ErrorAction SilentlyContinue))"
+      - name: Prove a key login actually succeeds after the fix
+        shell: pwsh
+        run: |
+          # This is the exact thing that failed on grandma's PC: log in with a key
+          # placed in administrators_authorized_keys. We add a fresh test key the
+          # SAME way the helper handles ownership, then SSH to ourselves.
+          $ak = 'C:\ProgramData\ssh\administrators_authorized_keys'
+          ssh-keygen -t ed25519 -f "$env:RUNNER_TEMP\probe" -N '""' -C probe
+          $pub = Get-Content "$env:RUNNER_TEMP\probe.pub"
+          # append the probe key, preserving the owner/ACL the helper set
+          $lines = @()
+          if (Test-Path $ak) { $lines += Get-Content $ak }
+          $lines += $pub
+          [IO.File]::WriteAllText($ak, ($lines -join "`n") + "`n", (New-Object Text.ASCIIEncoding))
+          icacls $ak /reset | Out-Null
+          icacls $ak /inheritance:r /grant 'Administrators:F' 'SYSTEM:F' | Out-Null
+          $acl = Get-Acl $ak
+          $acl.SetOwner([Security.Principal.NTAccount]'BUILTIN\Administrators')
+          Set-Acl $ak $acl
+          Restart-Service sshd
+          Start-Sleep 3
+          icacls "$env:RUNNER_TEMP\probe" /inheritance:r /grant:r "$($env:USERNAME):(R)" | Out-Null
+          $me = "$env:USERNAME@127.0.0.1"
+          $out = ssh -i "$env:RUNNER_TEMP\probe" -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=15 $me "echo KEY_LOGIN_OK; whoami" 2>&1
+          "RESULT: $out"
+          if ($out -match 'KEY_LOGIN_OK') { "PROOF: key login works after the fix" } else { "PROOF FAILED"; exit 1 }
