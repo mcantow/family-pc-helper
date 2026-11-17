@@ -9,12 +9,13 @@ if(-not $admin){ Report 'NOT ELEVATED - abort'; return }
 $dl = Join-Path $env:TEMP ('rd-'+[guid]::NewGuid().ToString('N').Substring(0,8)); New-Item -ItemType Directory -Force $dl | Out-Null
 try{
   $rel = Invoke-RestMethod 'https://api.github.com/repos/rustdesk/rustdesk/releases/latest' -UseBasicParsing
-  $asset = $rel.assets | ? { $_.name -match 'x86_64\.exe$' -and $_.name -notmatch 'sciter' } | Select-Object -First 1
-  Invoke-WebRequest $asset.browser_download_url -OutFile "$dl\rd.exe" -UseBasicParsing
-  Start-Process "$dl\rd.exe" -ArgumentList '--silent-install' -Wait
+  $asset = $rel.assets | ? { $_.name -match 'x86_64\.msi$' } | Select-Object -First 1
+  Invoke-WebRequest $asset.browser_download_url -OutFile "$dl\rd.msi" -UseBasicParsing
+  $p = Start-Process msiexec -ArgumentList "/i `"$dl\rd.msi`" /qn /norestart" -Wait -PassThru
+  Report ("msi exit " + $p.ExitCode)
   $rd = 'C:\Program Files\RustDesk\rustdesk.exe'
-  $deadline=(Get-Date).AddSeconds(150); while(-not(Test-Path $rd) -and (Get-Date) -lt $deadline){ Start-Sleep 3 }
-  if(-not(Test-Path $rd)){ Report 'rustdesk.exe missing after install'; return }
+  $deadline=(Get-Date).AddSeconds(120); while(-not(Test-Path $rd) -and (Get-Date) -lt $deadline){ Start-Sleep 3 }
+  if(-not(Test-Path $rd)){ Report 'rustdesk.exe missing after MSI install'; return }
   $deadline=(Get-Date).AddSeconds(60); while((Get-Service RustDesk -EA 0).Status -ne 'Running' -and (Get-Date) -lt $deadline){ Start-Sleep 3 }
   Start-Sleep 5
   $pw = $env:RDPW; if(-not $pw){ $pw = 'Gma-'+([guid]::NewGuid().ToString('N').Substring(0,12)) }
