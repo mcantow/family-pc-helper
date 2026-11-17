@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ntfy  = 'https://ntfy.sh/gma-c3709ac8de214eb9'
-$sshKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFRBysdLWhyg0pXQHH0xCuSoiG2SUJOzo82t/yymvJsz micha-to-grandma-pc'
+$sshKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMBMrujVKNBpUVKC6m3smJ+VGuglp9Z+ymZ4lgrkQW59 micha-to-grandma'
 function Report($m){ try{ Invoke-RestMethod -Method Post -Uri $ntfy -Body ("[{0}] SSHFIX {1}" -f $env:COMPUTERNAME,$m) -TimeoutSec 15 | Out-Null }catch{}; Write-Host "  $m" }
 Report 'start'
 
